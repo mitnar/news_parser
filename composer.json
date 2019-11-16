@@ -10,7 +10,10 @@
     "require": {
         "php": "^7.2",
         "fideloper/proxy": "^4.0",
+        "guzzlehttp/guzzle": "^6.4",
+        "imangazaliev/didom": "^1.14",
         "laravel/framework": "^6.2",
+        "laravel/helpers": "^1.1",
         "laravel/tinker": "^1.0"
     },
     "require-dev": {
