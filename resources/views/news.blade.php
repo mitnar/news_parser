@@ -12,7 +12,7 @@
             <div class="article">
                 <span class="col">{{ str_limit($article->name, 200) }}</span>
                 <span class="col">{{ $article->date }}</span>
-                <a class="col" href="{{ url("news/{$article->id}") }}">Подробнее</a>
+                <a class="col" href="{{ route('article', ['news' => $article]) }}">Подробнее</a>
             </div>
         @endforeach
     </div>
