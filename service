@@ -1,0 +1,214 @@
+<?php
+require($_SERVER["DOCUMENT_ROOT"]."/bitrix/modules/main/include/prolog_before.php");
+
+function str2url($str) {
+    // переводим в транслит
+    $str = rus2translit($str);
+    // в нижний регистр
+    $str = strtolower($str);
+    // заменям все ненужное нам на "-"
+    $str = preg_replace('~[^-a-z0-9_]+~u', '-', $str);
+
+    // удаляем ненужные символы
+    $str = preg_replace('/\(с\)/', '', $str);
+    $str = preg_replace('/\(-\)/', '', $str);
+
+    // удаляем начальные и конечные '-'
+    $str = trim($str, "-");
+    return $str;
+}
+
+$weightsSilver = [
+    '1' => '7,78 г',
+    '2' => '15,55 г',
+    '3' => '31,1 г',
+    '25' => '155,5 г',
+    '50' => '311,1 г',
+    '100' => '311 г',
+    '200' => '3000 г',
+    '500' => '5000 г',
+];
+
+$weightsGold = [
+    '10' => '1,555 г',
+    '25' => '3,11 г',
+    '50' => '7,78 г',
+    '100' => '15,55 г',
+    '200' => '155,5 г',
+    '1000' => '1000 г',
+    '25000' => '3000 г',
+    '50000' => '5000 г'
+
+];
+
+function getMetalContent($metal, $nominal) {
+    global $weightsGold;
+    global $weightsSilver;
+
+    if($metal === 'Золото') {
+        return $weightsGold[$nominal];
+    }
+    if($metal === 'Серебро') {
+        return $weightsSilver[$nominal];
+    }
+}
+
+$params = [
+    'trace'=> 1,
+    'exceptions' => 1,
+    'encoding' => 'UTF-8',
+    'cache_wsdl '=> WSDL_CACHE_NONE,
+    'soap_version'=> SOAP_1_2,
+];
+
+$client = new SoapClient("http://interlayer.bankuralsib.ru/MskWebSiteIIS_newworksite/backEndService.asmx?wsdl", $params);
+$response_soap = $client->__soapCall("BankCoinRates", array());;
+
+if(empty($response_soap))return;
+
+if(CModule::IncludeModule('iblock'));
+$arFilter=array("CODE"=>'coins');
+$res = CIBlock::GetList(Array(), Array('CODE' => 'coins'));
+
+if($info = $res->fetch()) {
+    $IBLOCK_ID = $info['ID'];
+}
+
+$jsonResult = json_decode($response_soap->BankCoinRatesResult);
+
+$res = CIBlockSection::GetList(
+    Array(),
+    Array("CODE" => "invest-money", "NAME" => "Инвестиционные монеты"),
+    false,
+    Array(),
+    false
+);
+
+if($info = $res->fetch()) {
+    $sectionId = $info['ID'];
+}
+
+foreach ($jsonResult as $item) {
+    $property_values = [
+        'METAL' => $item->Metall,
+        'NOMINAL_PRICE' => $item->Nominal,
+        'YEAR' => $item->Year,
+        'PROBA' => $item->Proba,
+        'DIRECTION' => $item->Direction,
+        'PRICE' => $item->SellR,
+        'OPT_PRICE' => $item->SellOpt,
+        'IS_SHOW' => 'N',
+        'CATEGORY' => $item->MoneyCategory,
+        'NUMBER' => $item->CurrentBalance,
+        'OLD_PRICE' => $item->SellR,
+        'NOVELTY' => $item->Year === '2020' ? 'Y' : 'N',
+        'SHARE' => 'N',
+        'METAL_CONTENT' => getMetalContent($item->Metall, $item->Nominal)
+    ];
+
+    $item->Name = preg_replace('/\(с\)/', '', $item->Name);
+    $item->Name = preg_replace('/\(-\)/', '', $item->Name);
+    $item->Name = trim($item->Name);
+
+    $props = [
+        'IBLOCK_ID' => $IBLOCK_ID, // ID инфоблока
+        'ACTIVE' => 'N',
+        'NAME' => $item->Name,
+        'SORT' => 1,
+        'CODE' => str2url($item->Name),
+        'ACTIVE_FROM' => date('d.m.Y H:i:s'),
+        'PROPERTY_VALUES' => $property_values,
+        'IBLOCK_SECTION_ID' => $sectionId,
+    ];
+
+    $arFilter = [
+        'IBLOCK_ID' => $IBLOCK_ID,
+        'NAME' => $item->Name,
+    ];
+    $rsItems = CIBlockElement::GetList([], $arFilter, false, false, []);
+    $arItem = $rsItems->GetNext();
+    $el = new CIBlockElement;
+    if ($arItem) { //Обновим элемент
+
+        $resProps = CIBlockElement::GetProperty(
+            $IBLOCK_ID,
+            $arItem['ID'],
+            Array(),
+            Array()
+        );
+
+        while($property = $resProps->Fetch()) {
+            if($property['CODE'] === 'OLD_PRICE') {
+                if($property['VALUE'] > $item->SellR) {
+                    $props['PROPERTY_VALUES']['OLD_PRICE'] = $property['VALUE'];
+                    $props['PROPERTY_VALUES']['SHARE'] = 'Y';
+                }
+                else {
+                    $props['PROPERTY_VALUES']['SHARE'] = 'N';
+                }
+            }
+            if($property['CODE'] === 'NUMBER') {
+                $props['PROPERTY_VALUES']['NUMBER'] = $property['VALUE'] + $item->CurrentBalance;
+            }
+        }
+
+        if (!$res = $el->Update($arItem['ID'], $props)) {
+            echo 'Error: ' . $el->LAST_ERROR;
+            exit;
+        }
+
+        CCatalogProduct::Update(
+            $arItem['ID'],
+            array("QUANTITY" =>  $props['PROPERTY_VALUES']['NUMBER'])
+        );
+
+        $prices = GetCatalogProductPriceList(
+            $arItem['ID'],
+		);
+        foreach($prices as $price)
+        {
+            if($price['QUANTITY_FROM'] === '1') {
+                CPrice::Update(
+                    $price['ID'],
+                    array("PRICE" => $item->SellR)
+                );
+            }
+            else {
+                CPrice::Update(
+                    $price['ID'],
+                    array("PRICE" => $item->SellOpt)
+                );
+            }
+        }
+
+    } else { //Добавим элемент
+        if (!$res = $el->Add($props)) {
+            echo 'Error: ' . $el->LAST_ERROR;
+            exit;
+        }
+
+        if (CCatalogProduct::Add(
+            array("ID" => $res,
+                "QUANTITY" => $item->CurrentBalance,
+                "QUANTITY_TRACE" => "Y",
+                "CAN_BUY_ZERO" => "N",
+                "SUBSCRIBE" => "N")
+        )) {
+
+            CPrice::SetBasePrice(
+                $res,
+                $item->SellR,
+                "RUB",
+                1,
+                ($item->Metall === 'Золото' || $item->Metall === 'Серебро') ? 9 : 49
+            );
+
+            CPrice::SetBasePrice(
+                $res,
+                $item->SellOpt,
+                "RUB",
+                ($item->Metall === 'Золото' || $item->Metall === 'Серебро') ? 10 : 50
+            );
+        }
+    }
+}
