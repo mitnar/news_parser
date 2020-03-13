@@ -38,18 +38,26 @@ $weightsGold = [
     '1000' => '1000 г',
     '25000' => '3000 г',
     '50000' => '5000 г'
+];
 
+$weightsCopperNickel = [
+    '25' => '10 г'
 ];
 
 function getMetalContent($metal, $nominal) {
     global $weightsGold;
     global $weightsSilver;
+    global $weightsCopperNickel;
 
     if($metal === 'Золото') {
         return $weightsGold[$nominal];
     }
     if($metal === 'Серебро') {
         return $weightsSilver[$nominal];
+    }
+
+    if($metal === 'Медно-никель') {
+        return $weightsCopperNickel[$nominal];
     }
 }
 
@@ -66,9 +74,9 @@ $response_soap = $client->__soapCall("BankCoinRates", array());;
 
 if(empty($response_soap))return;
 
-if(CModule::IncludeModule('iblock'));
-$arFilter=array("CODE"=>'coins');
-$res = CIBlock::GetList(Array(), Array('CODE' => 'coins'));
+if(CModule::IncludeModule('iblock')) {
+    $res = CIBlock::GetList(Array(), Array('CODE' => 'coins'));
+}
 
 if($info = $res->fetch()) {
     $IBLOCK_ID = $info['ID'];
@@ -87,6 +95,8 @@ $res = CIBlockSection::GetList(
 if($info = $res->fetch()) {
     $sectionId = $info['ID'];
 }
+
+$notFirsts = [];
 
 foreach ($jsonResult as $item) {
     $property_values = [
@@ -112,11 +122,11 @@ foreach ($jsonResult as $item) {
 
     $props = [
         'IBLOCK_ID' => $IBLOCK_ID, // ID инфоблока
-        'ACTIVE' => 'N',
         'NAME' => $item->Name,
         'SORT' => 1,
         'CODE' => str2url($item->Name),
         'ACTIVE_FROM' => date('d.m.Y H:i:s'),
+        'ACTIVE' => 'N',
         'PROPERTY_VALUES' => $property_values,
         'IBLOCK_SECTION_ID' => $sectionId,
     ];
@@ -130,6 +140,10 @@ foreach ($jsonResult as $item) {
     $el = new CIBlockElement;
     if ($arItem) { //Обновим элемент
 
+        $isCoinNotFirst  = array_search($arItem['ID'], $notFirsts);
+
+        $props['ACTIVE'] = $arItem['ACTIVE']; // не перезаписывать активность
+
         $resProps = CIBlockElement::GetProperty(
             $IBLOCK_ID,
             $arItem['ID'],
@@ -138,18 +152,29 @@ foreach ($jsonResult as $item) {
         );
 
         while($property = $resProps->Fetch()) {
-            if($property['CODE'] === 'OLD_PRICE') {
-                if($property['VALUE'] > $item->SellR) {
-                    $props['PROPERTY_VALUES']['OLD_PRICE'] = $property['VALUE'];
-                    $props['PROPERTY_VALUES']['SHARE'] = 'Y';
+            switch($property['CODE']) {
+                case 'OLD_PRICE': {
+                    if($property['VALUE'] > $item->SellR) {
+                        $props['PROPERTY_VALUES']['OLD_PRICE'] = $property['VALUE'];
+                        $props['PROPERTY_VALUES']['SHARE'] = 'Y';
+                    }
+                    else {
+                        $props['PROPERTY_VALUES']['SHARE'] = 'N';
+                    }
+                    break;
                 }
-                else {
-                    $props['PROPERTY_VALUES']['SHARE'] = 'N';
+                case 'NUMBER': {
+                    $props['PROPERTY_VALUES']['NUMBER'] = (($isCoinNotFirst === false) ? 0 : $property['VALUE']) + $item->CurrentBalance;
+                    break;
                 }
+                case 'COUNTRY':  // не перезаписывать массу
+                case 'METAL_CONTENT': // не перезаписывать массу
+                    $props['PROPERTY_VALUES'][$property['CODE']] = $property['VALUE'];
             }
-            if($property['CODE'] === 'NUMBER') {
-                $props['PROPERTY_VALUES']['NUMBER'] = $property['VALUE'] + $item->CurrentBalance;
-            }
+        }
+
+        if($isCoinNotFirst === false) {
+            $existsItems[] = $arItem['ID'];
         }
 
         if (!$res = $el->Update($arItem['ID'], $props)) {
@@ -163,7 +188,7 @@ foreach ($jsonResult as $item) {
         );
 
         $prices = GetCatalogProductPriceList(
-            $arItem['ID'],
+            $arItem['ID']
 		);
         foreach($prices as $price)
         {
@@ -182,6 +207,9 @@ foreach ($jsonResult as $item) {
         }
 
     } else { //Добавим элемент
+
+        $existsItems[] = $arItem['ID'];
+
         if (!$res = $el->Add($props)) {
             echo 'Error: ' . $el->LAST_ERROR;
             exit;
@@ -210,5 +238,22 @@ foreach ($jsonResult as $item) {
                 ($item->Metall === 'Золото' || $item->Metall === 'Серебро') ? 10 : 50
             );
         }
+    }
+}
+
+// деактивируем те монеты, которых нет в ЦФТ
+$arFilter = [
+    'IBLOCK_ID' => $IBLOCK_ID,
+    '!ID' => $notFirsts,
+];
+
+$rsItems = CIBlockElement::GetList([], $arFilter, false, false, []);
+
+while($arItem = $rsItems->GetNext()) {
+    $el = new CIBlockElement;
+
+    if (!$res = $el->Update($arItem['ID'], ['ACTIVE' => 'N'])) {
+        echo 'Error: ' . $el->LAST_ERROR;
+        exit;
     }
 }
