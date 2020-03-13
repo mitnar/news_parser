@@ -1,0 +1,48 @@
+<?php
+require($_SERVER["DOCUMENT_ROOT"] . "/bitrix/modules/main/include/prolog_before.php");
+
+use Bitrix\Sale;
+
+Bitrix\Main\Loader::includeModule("sale");
+
+$dbBasketItems = CSaleBasket::GetList(
+    array(),
+    array(
+        "FUSER_ID" => CSaleBasket::GetBasketUserID(),
+        "ORDER_ID" => "NULL"
+    ),
+    false,
+    false,
+    array("NAME", "BASE_PRICE", "QUANTITY")
+);
+
+$rows = '';
+$totalPrice = 0;
+$totalCount = 0;
+
+while ($arItem = $dbBasketItems->Fetch())
+{
+    $rows .= "Наименование: {$arItem['NAME']}, количество: {$arItem['QUANTITY']}</br>";
+    $totalPrice += $arItem['BASE_PRICE'] * $arItem['QUANTITY'];
+    $totalCount += $arItem['QUANTITY'];
+}
+
+$toSend = Array();
+$post = $_POST['coins_order'];
+$toSend['NAME'] = $post['name'];
+$toSend['SURNAME'] = $post['surname'];
+$toSend['SECOND_NAME'] = $post['second_name'];
+$toSend['EMAIL'] = $post['email'];
+$toSend['COMMENT'] = $post['comment'];
+$toSend['TELEPHONE'] = $post['phone'];
+$toSend['ROWS'] = $rows;
+$toSend['NUMBER'] = $totalCount;
+$toSend['SUMM'] = $totalPrice;
+
+// отправляем почту
+CEvent::Send("NEW_COINS_ORDER", "s1", $toSend, "N", 75);
+
+// удаляем все товары из корзины
+CSaleBasket::DeleteAll(CSaleBasket::GetBasketUserID());
+
+header('Location: ' .  $_SERVER['HTTP_REFERER']);
